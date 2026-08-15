@@ -1,0 +1,80 @@
+name: Build geosite.dat
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 21 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get upstream version
+        id: upstream
+        run: |
+          tag=$(curl -fsSL \
+            https://api.github.com/repos/Loyalsoldier/domain-list-custom/releases/latest \
+            | grep '"tag_name"' \
+            | cut -d'"' -f4)
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download geosite.dat
+        run: |
+          curl -fL --retry 5 \
+            -o geosite.dat \
+            "https://github.com/Loyalsoldier/domain-list-custom/releases/download/${{ steps.upstream.outputs.tag }}/geosite.dat"
+
+      - name: Filter geosite.dat
+        run: |
+          python3 -m pip install --quiet protobuf
+
+          curl -fsSL \
+            https://raw.githubusercontent.com/v2fly/v2ray-core/master/app/router/routercommon/common.proto \
+            -o common.proto
+
+          # здесь генерируем Python protobuf-классы
+          protoc --python_out=. common.proto
+
+          python3 <<'PY'
+          from pathlib import Path
+          import sys
+
+          from google.protobuf.internal.decoder import _DecodeVarint
+          from google.protobuf.internal.encoder import _VarintBytes
+
+          allowed = {
+              x.strip().lower()
+              for x in Path("categories.txt").read_text().splitlines()
+              if x.strip() and not x.lstrip().startswith("#")
+          }
+
+          data = Path("geosite.dat").read_bytes()
+
+          # ...
+          # protobuf-фильтрация GeoSiteList
+          # ...
+
+          Path("geosite.dat").write_bytes(data)
+          PY
+
+      - name: Generate sha256
+        run: |
+          sha256sum geosite.dat > geosite.dat.sha256sum
+
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.upstream.outputs.tag }}
+          name: ${{ steps.upstream.outputs.tag }}
+          files: |
+            geosite.dat
+            geosite.dat.sha256sum
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
