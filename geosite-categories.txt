@@ -4,3 +4,4 @@ mailru
 avito
 wildberries
 ozon
+private
