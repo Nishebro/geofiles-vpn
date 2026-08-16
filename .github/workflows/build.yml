@@ -164,11 +164,11 @@ jobs:
           tag_name: ${{ steps.release.outputs.tag }}
           name: ${{ steps.release.outputs.tag }}
           body: |
-            Source geosite:
-            ${{ steps.upstream.outputs.geosite_tag }}
-
             Source geoip:
-            ${{ steps.upstream.outputs.geoip_tag }}
+            https://github.com/Loyalsoldier/geoip/releases/tag/${{ steps.upstream.outputs.geoip_tag }}
+
+            Source geosite:
+            https://github.com/Loyalsoldier/domain-list-custom/releases/tag/${{ steps.upstream.outputs.geosite_tag }}
           files: |
             geosite.dat
             geosite.dat.sha256sum
