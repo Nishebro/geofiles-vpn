@@ -33,21 +33,8 @@ jobs:
 
       - name: Filter geosite.dat
         run: |
-          python3 -m pip install --quiet protobuf
-
-          curl -fsSL \
-            https://raw.githubusercontent.com/v2fly/v2ray-core/master/app/router/routercommon/common.proto \
-            -o common.proto
-
-          # здесь генерируем Python protobuf-классы
-          protoc --python_out=. common.proto
-
           python3 <<'PY'
           from pathlib import Path
-          import sys
-
-          from google.protobuf.internal.decoder import _DecodeVarint
-          from google.protobuf.internal.encoder import _VarintBytes
 
           allowed = {
               x.strip().lower()
@@ -57,18 +44,116 @@ jobs:
 
           data = Path("geosite.dat").read_bytes()
 
-          # ...
-          # protobuf-фильтрация GeoSiteList
-          # ...
+          def varint(data, pos):
+              value = 0
+              shift = 0
 
-          Path("geosite.dat").write_bytes(data)
+              while True:
+                  b = data[pos]
+                  pos += 1
+                  value |= (b & 0x7f) << shift
+
+                  if not b & 0x80:
+                      return value, pos
+
+                  shift += 7
+
+          def skip_field(data, pos, wire_type):
+              if wire_type == 0:
+                  _, pos = varint(data, pos)
+                  return pos
+
+              if wire_type == 1:
+                  return pos + 8
+
+              if wire_type == 2:
+                  length, pos = varint(data, pos)
+                  return pos + length
+
+              if wire_type == 5:
+                  return pos + 4
+
+              raise ValueError(f"Unsupported protobuf wire type: {wire_type}")
+
+          def field(data, pos):
+              key, pos = varint(data, pos)
+              field_number = key >> 3
+              wire_type = key & 7
+
+              start = pos
+
+              if wire_type == 0:
+                  _, pos = varint(data, pos)
+
+              elif wire_type == 1:
+                  pos += 8
+
+              elif wire_type == 2:
+                  length, pos = varint(data, pos)
+                  pos += length
+
+              elif wire_type == 5:
+                  pos += 4
+
+              else:
+                  raise ValueError(
+                      f"Unsupported protobuf wire type {wire_type}"
+                  )
+
+              return field_number, wire_type, start, pos
+
+          def country_code(message):
+              pos = 0
+
+              while pos < len(message):
+                  number, wire_type, start, end = field(message, pos)
+
+                  if number == 1 and wire_type == 2:
+                      length, value_start = varint(message, start)
+                      value_end = value_start + length
+                      return message[value_start:value_end].decode()
+
+                  pos = end
+
+              return None
+
+          # GeoSiteList.entry = field 1.
+          pos = 0
+          output = bytearray()
+          kept = []
+
+          while pos < len(data):
+              number, wire_type, start, end = field(data, pos)
+
+              if number != 1 or wire_type != 2:
+                  output.extend(data[pos:end])
+                  pos = end
+                  continue
+
+              length, message_start = varint(data, start)
+              message_end = message_start + length
+
+              message = data[message_start:message_end]
+              code = country_code(message)
+
+              if code and code.lower() in allowed:
+                  output.extend(data[pos:end])
+                  kept.append(code)
+
+              pos = message_end
+
+          Path("geosite.dat").write_bytes(output)
+
+          print(f"Kept {len(kept)} categories:")
+          for code in kept:
+              print(f"  {code}")
           PY
 
       - name: Generate sha256
         run: |
           sha256sum geosite.dat > geosite.dat.sha256sum
 
-      - name: Release
+      - name: Create release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.upstream.outputs.tag }}
