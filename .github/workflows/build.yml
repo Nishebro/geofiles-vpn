@@ -1,4 +1,4 @@
-name: Build geosite.dat
+name: Build geo files
 
 on:
   workflow_dispatch:
@@ -15,34 +15,43 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Get upstream version
+      - name: Get upstream versions
         id: upstream
         run: |
-          tag=$(curl -fsSL \
+          geosite_tag=$(curl -fsSL \
             https://api.github.com/repos/Loyalsoldier/domain-list-custom/releases/latest \
             | grep '"tag_name"' \
             | cut -d'"' -f4)
 
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          geoip_tag=$(curl -fsSL \
+            https://api.github.com/repos/Loyalsoldier/geoip/releases/latest \
+            | grep '"tag_name"' \
+            | cut -d'"' -f4)
+
+          echo "geosite_tag=$geosite_tag" >> "$GITHUB_OUTPUT"
+          echo "geoip_tag=$geoip_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release tag
+        id: release
+        run: |
+          echo "tag=$(date -u +'%Y%m%d%H%M%S')" >> "$GITHUB_OUTPUT"
 
       - name: Download geosite.dat
         run: |
           curl -fL --retry 5 \
             -o geosite.dat \
-            "https://github.com/Loyalsoldier/domain-list-custom/releases/download/${{ steps.upstream.outputs.tag }}/geosite.dat"
+            "https://github.com/Loyalsoldier/domain-list-custom/releases/download/${{ steps.upstream.outputs.geosite_tag }}/geosite.dat"
 
-      - name: Filter geosite.dat
+      - name: Download geoip.dat
+        run: |
+          curl -fL --retry 5 \
+            -o geoip.dat \
+            "https://github.com/Loyalsoldier/geoip/releases/download/${{ steps.upstream.outputs.geoip_tag }}/geoip.dat"
+
+      - name: Filter geo files
         run: |
           python3 <<'PY'
           from pathlib import Path
-
-          allowed = {
-              x.strip().lower()
-              for x in Path("categories.txt").read_text().splitlines()
-              if x.strip() and not x.lstrip().startswith("#")
-          }
-
-          data = Path("geosite.dat").read_bytes()
 
           def varint(data, pos):
               value = 0
@@ -58,51 +67,29 @@ jobs:
 
                   shift += 7
 
-          def skip_field(data, pos, wire_type):
-              if wire_type == 0:
-                  _, pos = varint(data, pos)
-                  return pos
-
-              if wire_type == 1:
-                  return pos + 8
-
-              if wire_type == 2:
-                  length, pos = varint(data, pos)
-                  return pos + length
-
-              if wire_type == 5:
-                  return pos + 4
-
-              raise ValueError(f"Unsupported protobuf wire type: {wire_type}")
-
           def field(data, pos):
               key, pos = varint(data, pos)
-              field_number = key >> 3
+              number = key >> 3
               wire_type = key & 7
-
               start = pos
 
               if wire_type == 0:
                   _, pos = varint(data, pos)
-
               elif wire_type == 1:
                   pos += 8
-
               elif wire_type == 2:
                   length, pos = varint(data, pos)
                   pos += length
-
               elif wire_type == 5:
                   pos += 4
-
               else:
                   raise ValueError(
-                      f"Unsupported protobuf wire type {wire_type}"
+                      f"Unsupported protobuf wire type: {wire_type}"
                   )
 
-              return field_number, wire_type, start, pos
+              return number, wire_type, start, pos
 
-          def country_code(message):
+          def get_country_code(message):
               pos = 0
 
               while pos < len(message):
@@ -117,49 +104,75 @@ jobs:
 
               return None
 
-          # GeoSiteList.entry = field 1.
-          pos = 0
-          output = bytearray()
-          kept = []
+          def filter_dat(filename, categories):
+              data = Path(filename).read_bytes()
+              output = bytearray()
+              kept = []
 
-          while pos < len(data):
-              number, wire_type, start, end = field(data, pos)
+              pos = 0
 
-              if number != 1 or wire_type != 2:
-                  output.extend(data[pos:end])
-                  pos = end
-                  continue
+              while pos < len(data):
+                  number, wire_type, start, end = field(data, pos)
 
-              length, message_start = varint(data, start)
-              message_end = message_start + length
+                  if number != 1 or wire_type != 2:
+                      output.extend(data[pos:end])
+                      pos = end
+                      continue
 
-              message = data[message_start:message_end]
-              code = country_code(message)
+                  length, message_start = varint(data, start)
+                  message_end = message_start + length
 
-              if code and code.lower() in allowed:
-                  output.extend(data[pos:end])
-                  kept.append(code)
+                  message = data[message_start:message_end]
+                  code = get_country_code(message)
 
-              pos = message_end
+                  if code and code.lower() in categories:
+                      output.extend(data[pos:end])
+                      kept.append(code)
 
-          Path("geosite.dat").write_bytes(output)
+                  pos = message_end
 
-          print(f"Kept {len(kept)} categories:")
-          for code in kept:
-              print(f"  {code}")
+              Path(filename).write_bytes(output)
+
+              print(f"{filename}: kept {len(kept)} categories:")
+              for code in kept:
+                  print(f"  {code}")
+
+          geosite_categories = {
+              x.strip().lower()
+              for x in Path("geosite-categories.txt").read_text().splitlines()
+              if x.strip() and not x.lstrip().startswith("#")
+          }
+
+          geoip_categories = {
+              x.strip().lower()
+              for x in Path("geoip-categories.txt").read_text().splitlines()
+              if x.strip() and not x.lstrip().startswith("#")
+          }
+
+          filter_dat("geosite.dat", geosite_categories)
+          filter_dat("geoip.dat", geoip_categories)
           PY
 
       - name: Generate sha256
         run: |
           sha256sum geosite.dat > geosite.dat.sha256sum
+          sha256sum geoip.dat > geoip.dat.sha256sum
 
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ steps.upstream.outputs.tag }}
-          name: ${{ steps.upstream.outputs.tag }}
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: ${{ steps.release.outputs.tag }}
+          body: |
+            Source geosite:
+            ${{ steps.upstream.outputs.geosite_tag }}
+
+            Source geoip:
+            ${{ steps.upstream.outputs.geoip_tag }}
           files: |
             geosite.dat
             geosite.dat.sha256sum
+            geoip.dat
+            geoip.dat.sha256sum
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
