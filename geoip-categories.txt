@@ -6,6 +6,4 @@ wildberries
 ozon
 private
 telegram
-vn
-za
 cn
