@@ -5,3 +5,4 @@ avito
 wildberries
 ozon
 private
+telegram
