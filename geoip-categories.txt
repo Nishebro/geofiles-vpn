@@ -6,3 +6,4 @@ wildberries
 ozon
 private
 category-speedtest
+cn
