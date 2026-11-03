@@ -6,4 +6,5 @@ wildberries
 ozon
 private
 category-speedtest
+category-ip-geo-detect
 cn
